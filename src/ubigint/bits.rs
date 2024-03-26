@@ -13,34 +13,52 @@ impl<const N_BITS: usize> UBigIntImpl<N_BITS> {
             { u30_to_bits(N_BITS - 30 * (n_limbs - 1)) }
         }
     }
+
+    pub fn convert_to_bits_toaltstack() -> Script {
+        let n_limbs: usize = (N_BITS + 30 - 1) / 30;
+
+        script! {
+            { n_limbs - 1 } OP_ROLL
+            { u30_to_bits_toaltstack(N_BITS - 30 * (n_limbs - 1)) }
+            for i in 0..(n_limbs - 1) {
+                { n_limbs - 2 - i } OP_ROLL
+                { u30_to_bits_toaltstack(30) }
+            }
+        }
+    }
+}
+
+fn u30_to_bits_common(num_bits: usize) -> Script {
+    script! {
+        2                           // 2^1
+        for _ in 0..(num_bits - 2) as u32 {
+            OP_DUP OP_DUP OP_ADD
+        }                           // 2^2 to 2^{num_bits - 1}
+        { num_bits - 1 } OP_ROLL
+
+        for _ in 0..(num_bits - 2) as u32 {
+            OP_2DUP OP_LESSTHANOREQUAL
+            OP_IF
+                OP_SWAP OP_SUB 1
+            OP_ELSE
+            OP_SWAP OP_DROP 0
+            OP_ENDIF
+            OP_TOALTSTACK
+        }
+
+        OP_2DUP OP_LESSTHANOREQUAL
+        OP_IF
+            OP_SWAP OP_SUB 1
+        OP_ELSE
+            OP_SWAP OP_DROP 0
+        OP_ENDIF
+    }
 }
 
 pub fn u30_to_bits(num_bits: usize) -> Script {
     if num_bits >= 2 {
         script! {
-            2                           // 2^1
-            for _ in 0..(num_bits - 2) as u32 {
-                OP_DUP OP_DUP OP_ADD
-            }                           // 2^2 to 2^{num_bits - 1}
-            { num_bits - 1 } OP_ROLL
-
-            for _ in 0..(num_bits - 2) as u32 {
-                OP_2DUP OP_LESSTHANOREQUAL
-                OP_IF
-                    OP_SWAP OP_SUB 1
-                OP_ELSE
-                    OP_SWAP OP_DROP 0
-                OP_ENDIF
-                OP_TOALTSTACK
-            }
-
-            OP_2DUP OP_LESSTHANOREQUAL
-            OP_IF
-                OP_SWAP OP_SUB 1
-            OP_ELSE
-                OP_SWAP OP_DROP 0
-            OP_ENDIF
-
+            { u30_to_bits_common(num_bits) }
             for _ in 0..(num_bits - 2) as u32 {
                 OP_FROMALTSTACK
             }
@@ -50,9 +68,23 @@ pub fn u30_to_bits(num_bits: usize) -> Script {
     }
 }
 
+pub fn u30_to_bits_toaltstack(num_bits: usize) -> Script {
+    if num_bits >= 2 {
+        script! {
+            { u30_to_bits_common(num_bits) }
+            OP_TOALTSTACK
+            OP_TOALTSTACK
+        }
+    } else {
+        script! {
+            OP_TOALTSTACK
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use std::ops::ShrAssign;
+    use core::ops::ShrAssign;
     use rand_chacha::ChaCha20Rng;
     use rand::{Rng, SeedableRng};
     use bitcoin_script::script;
@@ -167,6 +199,38 @@ mod test {
                 { UBigIntImpl::<N_BITS>::convert_to_bits() }
                 for i in 0..N_BITS as u32 {
                     { bits[N_BITS - 1 - i as usize] }
+                    OP_EQUALVERIFY
+                }
+                OP_PUSHNUM_1
+            };
+
+            let exec_result = execute_script(script);
+            assert!(exec_result.success);
+        }
+    }
+
+    #[test]
+    fn test_ubigint_to_bits_toaltstack() {
+        const N_BITS: usize = 254;
+
+        let mut prng = ChaCha20Rng::seed_from_u64(0);
+
+        for _ in 0..10 {
+            let a: BigUint = prng.sample(RandomBits::new(N_BITS as u64));
+
+            let mut bits = vec![];
+            let mut cur = a.clone();
+            for _ in 0..N_BITS {
+                bits.push(if cur.bit(0) { 1 } else { 0 });
+                cur.shr_assign(1);
+            }
+
+            let script = script! {
+                { UBigIntImpl::<N_BITS>::push_u32_le(&a.to_u32_digits()) }
+                { UBigIntImpl::<N_BITS>::convert_to_bits_toaltstack() }
+                for i in 0..N_BITS {
+                    OP_FROMALTSTACK
+                    { bits[i] }
                     OP_EQUALVERIFY
                 }
                 OP_PUSHNUM_1
