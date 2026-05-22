@@ -13,3 +13,6 @@ pub mod ell_coeffs;
 pub mod fp254impl;
 pub mod msm;
 pub mod utils;
+
+#[cfg(test)]
+mod opcode_analysis;
