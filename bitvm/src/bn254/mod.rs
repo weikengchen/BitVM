@@ -16,3 +16,5 @@ pub mod utils;
 
 #[cfg(test)]
 mod opcode_analysis;
+#[cfg(test)]
+mod opcode_codegen;
