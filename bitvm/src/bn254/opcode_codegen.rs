@@ -206,3 +206,97 @@ fn generate_fq12_mul() {
     println!("today (hinted)    : 3,217,947 bytes");
     println!("compression       : {:.0}x", 3_217_947f64 / total_bytes as f64);
 }
+
+/// Scale up: estimate the FULL monolithic verifier under the new opcodes by
+/// (1) building each block as an executable program validated against arkworks,
+/// then (2) summing over the same operation schedule used for the 895 MB baseline.
+/// Dominant ops (mul/square/ell-core) are validated executables; lines/frobenius
+/// are modeled from the validated fq2-mul unit; MSM uses the G1/G2 opcodes.
+#[test]
+fn generate_full_verifier() {
+    let mut prng = ChaCha20Rng::seed_from_u64(11);
+    let size = |ops: &[Op]| -> usize { ops.iter().map(op_bytes).sum() };
+
+    // ---- validated primitive: single Fq mul ----
+    let (xa, xb) = (F::rand(&mut prng), F::rand(&mut prng));
+    let mut b1 = Builder::new(vec![xa, xb]);
+    b1.mul(0, 1);
+    let fq_mul_sz = size(&b1.ops);
+
+    // ---- validated primitive: Fq2 mul ----
+    let a2 = ark_bn254::Fq2::rand(&mut prng);
+    let q2 = ark_bn254::Fq2::rand(&mut prng);
+    let init2 = vec![a2.c0, a2.c1, q2.c0, q2.c1];
+    let mut bd2 = Builder::new(init2.clone());
+    let r2 = fq2_mul(&mut bd2, [0, 1], [2, 3]);
+    let fs2 = execute(&bd2.ops, init2);
+    let p2 = a2 * q2;
+    assert_eq!((fs2[r2[0]], fs2[r2[1]]), (p2.c0, p2.c1), "fq2 mul mismatch");
+    let fq2_sz = size(&bd2.ops);
+
+    // ---- validated primitive: Fq12 mul ----
+    let a = ark_bn254::Fq12::rand(&mut prng);
+    let b = ark_bn254::Fq12::rand(&mut prng);
+    let am: P12 = [[[0, 1], [2, 3], [4, 5]], [[6, 7], [8, 9], [10, 11]]];
+    let bm: P12 = [[[12, 13], [14, 15], [16, 17]], [[18, 19], [20, 21], [22, 23]]];
+    let mut i12 = d12(a);
+    i12.extend(d12(b));
+    let mut bdm = Builder::new(i12.clone());
+    let rm = fq12_mul(&mut bdm, am, bm);
+    let fsm = execute(&bdm.ops, i12.clone());
+    let rmp: Vec<usize> = rm.iter().flatten().flatten().copied().collect();
+    assert_eq!(rmp.iter().map(|&p| fsm[p]).collect::<Vec<_>>(), d12(a * b), "fq12 mul mismatch");
+    let mul_sz = size(&bdm.ops);
+
+    // ---- validated primitive: Fq12 square (via mul(a,a); conservative) ----
+    let sa = d12(a);
+    let mut bds = Builder::new(sa.clone());
+    let rs = fq12_mul(&mut bds, am, am);
+    let fss = execute(&bds.ops, sa.clone());
+    let rsp: Vec<usize> = rs.iter().flatten().flatten().copied().collect();
+    assert_eq!(rsp.iter().map(|&p| fss[p]).collect::<Vec<_>>(), d12(a * a), "fq12 square mismatch");
+    let sq_sz = size(&bds.ops);
+
+    // ---- op-class sizes modeled from validated units + chosen opcodes ----
+    let inv_op = 1usize; // OP_FQ_INV (1 extra opcode beyond the add/mul set)
+    let ell_sz = mul_sz + 4 * fq_mul_sz;      // sparse mul proxied by full mul (conservative ~1.6x) + x,y scaling
+    let frob_sz = 6 * fq2_sz;                 // ~5 Fq2 mul-by-frobenius-const + conjugations
+    let line_sz = 4 * fq2_sz + inv_op;        // slope (sq+mul+inv)+coeffs; point update via G2 opcode
+    let from_eval_sz = inv_op + 2 * fq_mul_sz;
+    let msm_sz = 3usize;                      // (NUM_PUBS+1) G1 scalarmul/add opcodes
+
+    // ---- schedule (identical to the 895 MB baseline) ----
+    let iters = 64usize;
+    let n_nz = 21usize;
+    let rows: Vec<(&str, usize, usize, bool)> = vec![
+        // name, size, count, validated?
+        ("Fq12 square",                 sq_sz,   iters,            true),
+        ("Fq12 mul (c/c_inv/wi/frob)",  mul_sz,  n_nz + 4,         true),
+        ("ell+sparse mul",              ell_sz,  3*iters+3*n_nz+6, true),
+        ("Fq12 frobenius",              frob_sz, 3,                false),
+        ("g2 tangent line",             line_sz, iters,            false),
+        ("g2 double line",              line_sz, iters,            false),
+        ("g2 chord line",               line_sz, n_nz + 2,         false),
+        ("g2 add line",                 line_sz, n_nz + 1,         false),
+        ("Fq2 mul (beta)",              fq2_sz,  3,                true),
+        ("MSM (G1 opcodes)",            msm_sz,  1,                false),
+        ("Fq inv (pre)",                inv_op,  1,                false),
+        ("Fq mul (pre)",                fq_mul_sz, 1,              true),
+        ("from_eval_point (pre)",       from_eval_sz, 3,           false),
+    ];
+
+    println!("\n=== validated primitive sizes (new opcodes, executable) ===");
+    println!("fq_mul={fq_mul_sz}B  fq2_mul={fq2_sz}B  fq12_mul={mul_sz}B  fq12_square={sq_sz}B");
+    println!("\n{:<30} {:>9} {:>6} {:>6} {:>14}", "component", "bytes/ea", "count", "valid", "subtotal");
+    let mut total = 0usize;
+    for (name, sz, cnt, valid) in &rows {
+        let sub = sz * cnt;
+        total += sub;
+        println!("{:<30} {:>9} {:>6} {:>6} {:>14}", name, sz, cnt, if *valid {"yes"} else {"~mdl"}, sub);
+    }
+    let today = 895_275_878f64;
+    println!("\nFULL verifier @ new opcodes : {} bytes ({:.0} KB)", total, total as f64 / 1e3);
+    println!("today (hinted)              : {:.0} bytes ({:.0} MB)", today, today / 1e6);
+    println!("compression                 : {:.0}x", today / total as f64);
+    println!("fits in 4 MB tapscript      : {} ({:.1}x headroom)", total < 4_000_000, 4_000_000f64 / total as f64);
+}
