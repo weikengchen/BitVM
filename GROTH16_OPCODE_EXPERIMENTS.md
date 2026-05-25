@@ -48,6 +48,41 @@ All experiment code lives in:
 
 ## Results
 
+### 0. Before vs after, at a glance
+
+Same operation schedule, two cost models. **Before** = today's hinted limb-based
+scripts (compiled bytes); **after** = the hypothetical 1-byte opcodes (1 field
+element = 1 stack item). Subtotals weight each block by its occurrence in the
+64-iteration quad Miller loop (+21 add steps) and the pre-pairing setup.
+
+| component | count | before /ea | after /ea | before subtotal | after subtotal | shrink |
+|---|--:|--:|--:|--:|--:|--:|
+| **ell + sparse mul** | 261 | 2,222,815 | 2,445 | **580 MB** (65%) | **638 KB** (72%) | 909× |
+| Fq12 square | 64 | 2,155,690 | 2,413 | 138 MB (15%) | 154 KB (17%) | 893× |
+| Fq12 mul | 25 | 3,217,947 | 2,425 | 80 MB (9%) | 61 KB (7%) | 1,327× |
+| g2 lines (tan/dbl/chord/add) | 173 | – | 161 | 71 MB (8%) | 28 KB (3%) | ~2,500× |
+| MSM (G1, 2 bases) | 1 | 19,391,088 | 3 | 19 MB (2%) | ~0 | ~6.5M× |
+| frobenius / Fq2 mul / pre-setup | – | – | – | ~6 MB (~1%) | ~1 KB | – |
+| **TOTAL** | | | | **≈895 MB** | **≈882 KB** | **1,015×** |
+
+**Opcode-class split of one validated `fq12_mul` (2,425 B, the after model):**
+
+| op class | count | bytes | share |
+|---|--:|--:|--:|
+| arithmetic (`FqMul` 95 + `FqAdd/Sub` 215) | 310 | ~310 | 13% |
+| `Pick` (stack copies) | 620 | ~1,650 | **68%** |
+| `Push` (const 9, non-residue) | 14 | ~460 | 19% |
+
+The key qualitative result: once a multiply is 1 byte, **data movement dominates**,
+not arithmetic.
+
+> **Note on units.** The two cost columns are not the same metric. *Before* is
+> measured as compiled script bytes plus the field-multiplication (`tmul`) count
+> (**10,632** across the verifier); the hinted scripts are never decompiled into
+> literal Bitcoin `OP_*` counts. *After* is counted in 1-byte field/curve opcodes
+> plus realistic stack-move bytes. The opcode-class split above is the only
+> per-opcode histogram produced, and only for the dominant `fq12_mul` primitive.
+
 ### 1. Baseline — today's verifier (validates the README's "~1 GB")
 
 Leaf and tower primitives, measured (`measure_field_primitive_sizes`):

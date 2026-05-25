@@ -48,6 +48,9 @@ Below is a list of the components and their purpose.
 - [**Groth16**](bitvm/src/groth16/):
   Groth16 uses BN254 to verify proof, the script is currently around 1 GB.
   Some hints are precomputed in this part, which is related to the paper "On Proving Pairings".
+  See [GROTH16_OPCODE_EXPERIMENTS.md](GROTH16_OPCODE_EXPERIMENTS.md) for a study of
+  how this ~1 GB verifier would shrink to ~882 KB (and fit in a single tapscript)
+  if Bitcoin Script had dedicated BN254 field/curve opcodes.
 
 - [**Chunk**](bitvm/src/chunk/):
   Splits Groth16 into chunks.
